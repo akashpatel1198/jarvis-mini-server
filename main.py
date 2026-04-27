@@ -65,14 +65,13 @@ async def transcribe(audio: UploadFile = File(...)) -> dict[str, str]:
 
 
 @app.post("/command")
-async def command(audio: UploadFile = File(...)) -> dict[str, str]:
+async def command(audio: UploadFile = File(...)) -> dict[str, Any]:
     started = time.perf_counter()
     log_entry: dict[str, Any] = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "transcript": None,
-        "tool_called": None,
-        "tool_args": None,
-        "tool_result": None,
+        "tool_calls": [],
+        "phone_actions": [],
         "reply": None,
         "latency_ms": None,
         "error": None,
@@ -99,25 +98,32 @@ async def command(audio: UploadFile = File(...)) -> dict[str, str]:
             tools=tools.all_definitions(),
         )
         first_msg = first.choices[0].message
+        phone_actions: list[dict[str, Any]] = []
 
         if first_msg.tool_calls:
-            tool_call = first_msg.tool_calls[0]
-            tool_name = tool_call.function.name
-            tool_args = json.loads(tool_call.function.arguments or "{}")
-            log_entry["tool_called"] = tool_name
-            log_entry["tool_args"] = tool_args
-
-            tool_result = tools.execute(tool_name, tool_args)
-            log_entry["tool_result"] = tool_result
-
             messages.append(first_msg.model_dump())
-            messages.append(
-                {
-                    "role": "tool",
-                    "tool_call_id": tool_call.id,
-                    "content": tool_result,
-                }
-            )
+            for tool_call in first_msg.tool_calls:
+                tool_name = tool_call.function.name
+                tool_args = json.loads(tool_call.function.arguments or "{}")
+                try:
+                    result = tools.execute(tool_name, tool_args)
+                    text_for_llm = result.text
+                    if result.phone_action is not None:
+                        phone_actions.append(result.phone_action)
+                except Exception as e:
+                    text_for_llm = f"Tool error: {type(e).__name__}: {e}"
+
+                log_entry["tool_calls"].append(
+                    {"name": tool_name, "args": tool_args, "result": text_for_llm}
+                )
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tool_call.id,
+                        "content": text_for_llm,
+                    }
+                )
+
             second = client.chat.completions.create(
                 model=LLM_MODEL,
                 messages=messages,
@@ -127,7 +133,12 @@ async def command(audio: UploadFile = File(...)) -> dict[str, str]:
             reply = first_msg.content or ""
 
         log_entry["reply"] = reply
-        return {"transcript": transcript, "reply": reply}
+        log_entry["phone_actions"] = phone_actions
+        return {
+            "transcript": transcript,
+            "reply": reply,
+            "phone_actions": phone_actions,
+        }
     except HTTPException as e:
         log_entry["error"] = f"http_{e.status_code}: {e.detail}"
         raise
