@@ -160,30 +160,53 @@ def _wait_for_online(vin: str, timeout_s: float = 30.0) -> bool:
     return False
 
 
-def _is_asleep_error(resp: requests.Response) -> bool:
-    if resp.status_code in (408, 500):
-        body = resp.text.lower()
-        return "asleep" in body or "offline" in body
-    return False
+def _safety_block_reason(data: dict[str, Any]) -> str | None:
+    """If a write would be unsafe (someone in/driving the car), return a reason."""
+    veh = data.get("vehicle_state") or {}
+    drive = data.get("drive_state") or {}
+    if veh.get("is_user_present") is True:
+        return "someone is in the car"
+    shift = drive.get("shift_state")
+    if shift and shift != "P":
+        return f"the car is in gear ({shift})"
+    speed = drive.get("speed")
+    if speed is not None and speed > 0:
+        return "the car is moving"
+    return None
 
 
 def _command(action_label: str, command_path: str) -> ToolResult:
     try:
         vin = _vin()
-        resp = _proxy("POST", f"/api/1/vehicles/{vin}/command/{command_path}")
-        if _is_asleep_error(resp):
+
+        # Pre-flight safety check: only proceed if the car is unattended and parked.
+        state_resp = _api("GET", f"/api/1/vehicles/{vin}/vehicle_data")
+        if state_resp.status_code == 408:
+            # Asleep means nobody is in or driving it. Wake and re-check.
             if not _wait_for_online(vin):
                 return ToolResult(
                     text="Couldn't wake the car in time. Try again in a moment."
                 )
-            resp = _proxy("POST", f"/api/1/vehicles/{vin}/command/{command_path}")
+            state_resp = _api("GET", f"/api/1/vehicles/{vin}/vehicle_data")
+        if not state_resp.ok:
+            return ToolResult(
+                text=(
+                    f"Couldn't read vehicle state (HTTP {state_resp.status_code}) — "
+                    "refusing the command to be safe."
+                )
+            )
 
+        reason = _safety_block_reason(state_resp.json()["response"])
+        if reason:
+            return ToolResult(text=f"Holding off on {action_label.lower()} — {reason}.")
+
+        resp = _proxy("POST", f"/api/1/vehicles/{vin}/command/{command_path}")
         if resp.status_code == 200:
             body = resp.json().get("response") or {}
             if body.get("result"):
                 return ToolResult(text=f"{action_label} succeeded.")
-            reason = body.get("reason") or "no reason given"
-            return ToolResult(text=f"{action_label} failed: {reason}")
+            why = body.get("reason") or "no reason given"
+            return ToolResult(text=f"{action_label} failed: {why}")
         return ToolResult(
             text=(
                 f"{action_label} failed (HTTP {resp.status_code}). "
