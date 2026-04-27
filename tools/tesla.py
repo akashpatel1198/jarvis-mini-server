@@ -110,9 +110,13 @@ def _status(args: dict[str, Any]) -> ToolResult:
         vin = _vin()
         resp = _api("GET", f"/api/1/vehicles/{vin}/vehicle_data")
         if resp.status_code == 408:
-            return ToolResult(
-                text="The car is asleep. Try again in a moment to wake it."
-            )
+            # Asleep — wake briefly and retry once. Wake_up itself doesn't
+            # meaningfully drain the battery.
+            if not _wait_for_online(vin):
+                return ToolResult(
+                    text="Couldn't wake the car in time. Try again in a moment."
+                )
+            resp = _api("GET", f"/api/1/vehicles/{vin}/vehicle_data")
         resp.raise_for_status()
         data = resp.json()["response"]
         charge = data.get("charge_state", {})
