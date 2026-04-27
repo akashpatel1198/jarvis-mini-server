@@ -4,12 +4,12 @@ plus an optional phone_action that the Android client executes."""
 
 from typing import Any, Callable
 
-from . import get_time, grocery, spotify
+from . import get_time, grocery, spotify, tesla
 from ._result import ToolResult
 
 __all__ = ["ToolResult", "all_definitions", "execute"]
 
-_MODULES = (get_time, grocery, spotify)
+_MODULES = (get_time, grocery, spotify, tesla)
 
 _TOOLS: dict[str, dict[str, Any]] = {}
 for _mod in _MODULES:
