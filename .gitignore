@@ -3,6 +3,7 @@
 .env.*
 !.env.example
 keys/
+.cache
 
 # Python
 __pycache__/
@@ -26,6 +27,7 @@ dist/
 # Logs / local data
 *.log
 logs/
+data/
 *.sqlite
 *.sqlite3
 *.db
